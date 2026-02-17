@@ -9,8 +9,9 @@ on:
 jobs:
   security-pipeline:
     runs-on: ubuntu-latest
-    continue-on-error: true  # 🔵 ¡IMPORTANTE! El job completo no falla
-    
+    # 🔵 EJECUTA TODOS LOS ESCÁNERES AUNQUE ALGUNO FALLE
+    continue-on-error: true
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -18,28 +19,28 @@ jobs:
           fetch-depth: 0
 
       # ============================================
-      # GITLEAKS
+      # GITLEAKS - Escaneo de secretos
       # ============================================
       - name: Gitleaks
         uses: zricethezav/gitleaks-action@v1.6.0
-        continue-on-error: true  # 🔵 No detiene el pipeline
+        continue-on-error: true
 
       # ============================================
-      # SNYK
+      # SNYK - Análisis de dependencias
       # ============================================
       - name: Install system dependencies and Snyk
         run: |
           sudo apt-get update
           sudo apt-get install -y libjpeg-dev zlib1g-dev
-          pip install --no-cache-dir -r lab_zero_plus/requirements.txt
+          pip install --no-cache-dir -r requirements.txt
           npm install -g snyk
 
       - name: Snyk Test
+        id: snyk
         run: snyk test --severity-threshold=high
-        continue-on-error: true  # 🔵 No detiene el pipeline
+        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        working-directory: ./lab_zero_plus
 
       - name: Install snyk-to-html
         if: always()
@@ -52,25 +53,26 @@ jobs:
           snyk-to-html -i snyk-report.json -o snyk-report.html || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        working-directory: ./lab_zero_plus
 
       # ============================================
-      # SONARCLOUD
+      # SONARCLOUD - Análisis estático
       # ============================================
       - name: SonarCloud Scan
+        id: sonar
         uses: sonarsource/sonarqube-scan-action@master
-        continue-on-error: true  # 🔵 No detiene el pipeline
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
             -Dsonar.host.url=https://sonarcloud.io
             -Dsonar.organization=negrete-8
-            -Dsonar.projectKey=negrete-8_labzero
-            -Dsonar.sources=./lab_zero_plus
+            -Dsonar.projectKey=negrete-8_titan
+            -Dsonar.sources=.
+            -Dsonar.python.version=3.9
 
       # ============================================
-      # ZAP
+      # ZAP - Análisis dinámico
       # ============================================
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -80,36 +82,41 @@ jobs:
       - name: Install ZAP API
         run: pip install python-owasp-zap-v2.4
 
+      # Construir y ejecutar la aplicación con Docker
       - name: Build and Run Flask App
         run: |
-          cd lab_zero_plus
-          docker build -t flask-app .
-          docker run -d --name flask-app --network host flask-app
+          docker build -t titan-app .
+          docker run -d --name titan-app --network host titan-app
+          echo "⏳ Esperando 30 segundos a que la app arranque..."
           sleep 30
+          echo "✅ App corriendo en http://localhost:5000"
 
       - name: Run ZAP
         run: |
-          docker run -d --name zap --network host -v $(pwd)/lab_zero_plus:/zap/wrk:rw \
+          docker run -d --name zap --network host -v $(pwd):/zap/wrk:rw \
             zaproxy/zap-stable \
             zap.sh -daemon -host 0.0.0.0 -port 8080 \
             -config api.key=${{ secrets.ZAP_API_KEY }}
+          echo "⏳ Esperando 30 segundos a que ZAP arranque..."
           sleep 30
+          echo "✅ ZAP corriendo en http://localhost:8080"
 
       - name: ZAP Scan
-        run: cd lab_zero_plus && python zap_scan.py
-        continue-on-error: true  # 🔵 No detiene el pipeline
+        id: zap
+        run: python zap_scan.py
+        continue-on-error: true
         env:
           ZAP_API_KEY: ${{ secrets.ZAP_API_KEY }}
 
       # ============================================
-      # ARTIFACTS - SUBIR TODOS LOS REPORTES
+      # ARTIFACTS - SUBIR REPORTES
       # ============================================
       - name: Upload Snyk Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: snyk-report
-          path: lab_zero_plus/snyk-report.html
+          path: snyk-report.html
           if-no-files-found: warn
 
       - name: Upload ZAP Report
@@ -117,17 +124,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
-          path: lab_zero_plus/zap-report.html
+          path: zap-report.html
           if-no-files-found: warn
 
       # ============================================
-      # NOTIFICACIÓN FINAL - SIEMPRE SE EJECUTA
+      # NOTIFICACIÓN FINAL
       # ============================================
       - name: Notificación
         if: always()
         run: |
           echo "========================================"
-          echo "🚀 Pipeline completado - TODOS los escáneres ejecutados"
+          echo "🚀 Pipeline Titan completado"
           echo "📊 Reportes disponibles en artifacts"
-          echo "⚠️ Se encontraron vulnerabilidades (ver reportes)"
+          echo "📌 Ver resultados en:"
+          echo "   ☁️ SonarCloud: https://sonarcloud.io/project/overview?id=negrete-8_titan"
           echo "========================================"
